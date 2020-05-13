@@ -20,50 +20,54 @@
 #include <tinycbor/cbor_buf_reader.h>
 #include <tinycbor/extract_number_p.h>
 
-static uint8_t
-cbuf_buf_reader_get8(struct cbor_decoder_reader *d, int offset)
+static int
+cbuf_buf_reader_get8(struct cbor_decoder_reader *d, int offset, uint8_t *v)
 {
     struct cbor_buf_reader *cb = (struct cbor_buf_reader *) d;
-    return cb->buffer[offset];
+    *v = cb->buffer[offset];
+    return 1;
 }
 
-static uint16_t
-cbuf_buf_reader_get16(struct cbor_decoder_reader *d, int offset)
+static int
+cbuf_buf_reader_get16(struct cbor_decoder_reader *d, int offset, uint16_t *v)
 {
     struct cbor_buf_reader *cb = (struct cbor_buf_reader *) d;
-    return get16(cb->buffer + offset);
+    *v = get16(cb->buffer + offset);
+    return 2;
 }
 
-static uint32_t
-cbuf_buf_reader_get32(struct cbor_decoder_reader *d, int offset)
-{
-    uint32_t val;
-    struct cbor_buf_reader *cb = (struct cbor_buf_reader *) d;
-    val = get32(cb->buffer + offset);
-    return val;
-}
-
-static uint64_t
-cbuf_buf_reader_get64(struct cbor_decoder_reader *d, int offset)
+static int
+cbuf_buf_reader_get32(struct cbor_decoder_reader *d, int offset, uint32_t *v)
 {
     struct cbor_buf_reader *cb = (struct cbor_buf_reader *) d;
-    return get64(cb->buffer + offset);
+    *v = get32(cb->buffer + offset);
+    return 4;
 }
 
-static uintptr_t
+static int
+cbuf_buf_reader_get64(struct cbor_decoder_reader *d, int offset, uint64_t *v)
+{
+    struct cbor_buf_reader *cb = (struct cbor_buf_reader *) d;
+    *v = get64(cb->buffer + offset);
+    return 8;
+}
+
+static int
 cbor_buf_reader_cmp(struct cbor_decoder_reader *d, char *dst, int src_offset,
-                    size_t len)
+                    size_t len, uintptr_t *v)
 {
     struct cbor_buf_reader *cb = (struct cbor_buf_reader *) d;
-    return memcmp(dst, cb->buffer + src_offset, len) == 0;
+    *v = memcmp(dst, cb->buffer + src_offset, len) == 0;
+    return len;
 }
 
-static uintptr_t
+static int
 cbor_buf_reader_cpy(struct cbor_decoder_reader *d, char *dst, int src_offset,
-                    size_t len)
+                    size_t len, uintptr_t *v)
 {
     struct cbor_buf_reader *cb = (struct cbor_buf_reader *) d;
-    return (uintptr_t) memcpy(dst, cb->buffer + src_offset, len);
+    *v = (uintptr_t)memcpy(dst, cb->buffer + src_offset, len);
+    return len;
 }
 
 void

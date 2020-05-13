@@ -41,7 +41,7 @@ static inline int
 cbor_cnt_writer(struct cbor_encoder_writer *arg, const char *data, int len) {
     struct CborCntWriter *cb = (struct CborCntWriter *) arg;
     cb->enc.bytes_written += len;
-    return CborNoError;
+    return len;
 }
 
 static inline void

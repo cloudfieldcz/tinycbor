@@ -33,9 +33,9 @@
 #include "tinycbor/compilersupport_p.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-
 
 #include "tinycbor/assert_p.h"       /* Always include last */
 
@@ -242,7 +242,16 @@ static inline void put64(void *where, uint64_t v)
 
 static inline CborError append_to_buffer(CborEncoder *encoder, const void *data, size_t len)
 {
-    return encoder->writer->write(encoder->writer, data, len);
+    ssize_t ret = encoder->writer->write(encoder->writer, data, len);
+    if(ret < 0) {
+      errno = ret;
+      return CborErrorIO;
+    }
+    if(ret != len) {
+      errno = -ENOSPC;
+      return CborErrorIO;
+    }
+    return CborNoError;
 }
 
 static inline CborError append_byte_to_buffer(CborEncoder *encoder, uint8_t byte)

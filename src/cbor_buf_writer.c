@@ -17,6 +17,7 @@
  * under the License.
  */
 
+#include <errno.h>
 #include <tinycbor/cbor.h>
 #include <tinycbor/cbor_buf_writer.h>
 
@@ -35,13 +36,13 @@ cbor_buf_writer(struct cbor_encoder_writer *arg, const char *data, int len)
     struct cbor_buf_writer *cb = (struct cbor_buf_writer *) arg;
 
     if (would_overflow(cb, len)) {
-        return CborErrorOutOfMemory;
+        return -ENOMEM;
     }
 
     memcpy(cb->ptr, data, len);
     cb->ptr += len;
     cb->enc.bytes_written += len;
-    return CborNoError;
+    return len;
 }
 
 void

@@ -52,7 +52,13 @@ static inline uint64_t get64(const uint8_t *ptr)
 
 static inline CborError extract_number(const CborParser *p, int *offset, uint64_t *len)
 {
-    uint8_t additional_information = p->d->get8(p->d, *offset) & SmallValueMask;
+
+    uint8_t additional_information;
+    CborError ret = p->d->get8(p->d, *offset, &additional_information);
+    if(ret) {
+      return ret;
+    }
+    additional_information &= SmallValueMask;
     ++*offset;
     *len = 1;
     if (additional_information < Value8Bit) {
@@ -63,16 +69,34 @@ static inline CborError extract_number(const CborParser *p, int *offset, uint64_
         return CborErrorIllegalNumber;
 
     size_t bytesNeeded = (size_t)(1 << (additional_information - Value8Bit));
-    if (unlikely(bytesNeeded > (size_t)(p->end - *offset))) {
+    if (unlikely(p->end && bytesNeeded > (size_t)(p->end - *offset))) {
         return CborErrorUnexpectedEOF;
     } else if (bytesNeeded == 1) {
-        *len = p->d->get8(p->d, *offset);
+        uint8_t v;
+        ret = p->d->get8(p->d, *offset, &v);
+        if(ret) {
+          return ret;
+        }
+        *len = v;
     } else if (bytesNeeded == 2) {
-        *len =  p->d->get16(p->d, *offset);
+        uint16_t v;
+        ret = p->d->get16(p->d, *offset, &v);
+        if(ret) {
+          return ret;
+        }
+        *len = v;
     } else if (bytesNeeded == 4) {
-        *len =  p->d->get32(p->d, *offset);
+        uint32_t v;
+        ret = p->d->get32(p->d, *offset, &v);
+        if(ret) {
+          return ret;
+        }
+        *len = v;
     } else {
-        *len =  p->d->get64(p->d, *offset);
+        ret = p->d->get64(p->d, *offset, len);
+        if(ret) {
+          return ret;
+        }
     }
     *offset += bytesNeeded;
     return CborNoError;

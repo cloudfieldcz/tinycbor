@@ -36,8 +36,9 @@
 #include <assert.h>
 #include <string.h>
 
+#include "tinycbor/assert_p.h" /* Always include last */
+#include <errno.h>
 #include <tinycbor/cbor_buf_reader.h>
-#include "tinycbor/assert_p.h"       /* Always include last */
 
 #ifndef CBOR_PARSER_MAX_RECURSIONS
 #  define CBOR_PARSER_MAX_RECURSIONS 1024
@@ -175,10 +176,14 @@ static CborError preparse_value(CborValue *it)
     it->type = CborInvalidType;
 
     /* are we at the end? */
-    if (it->offset == parser->end)
+    if (parser->end && it->offset == parser->end)
         return CborErrorUnexpectedEOF;
 
-    uint8_t descriptor = parser->d->get8(parser->d, it->offset);
+    uint8_t descriptor;
+    if(parser->d->get8(parser->d, it->offset, &descriptor) != 1) {
+      return CborErrorIO;
+    }
+
     uint8_t type = descriptor & MajorTypeMask;
     it->type = type;
     it->flags = 0;
@@ -197,7 +202,7 @@ static CborError preparse_value(CborValue *it)
     }
 
     size_t bytesNeeded = descriptor < Value8Bit ? 0 : (1 << (descriptor - Value8Bit));
-    if (bytesNeeded + 1 > (size_t)(parser->end - it->offset))
+    if (parser->end && bytesNeeded + 1 > (size_t)(parser->end - it->offset))
         return CborErrorUnexpectedEOF;
 
     uint8_t majortype = type >> MajorTypeShift;
@@ -219,18 +224,26 @@ static CborError preparse_value(CborValue *it)
         case NullValue:
         case UndefinedValue:
         case HalfPrecisionFloat:
-            it->type = parser->d->get8(parser->d, it->offset);
+            if(parser->d->get8(parser->d, it->offset, &it->type) != 1) {
+              return CborErrorIO;
+            }
             break;
 
-        case SimpleTypeInNextByte:
-            it->extra = parser->d->get8(parser->d, it->offset + 1);
+        case SimpleTypeInNextByte: {
+          uint8_t v;
+          if (parser->d->get8(parser->d, it->offset + 1, &v) != 1) {
+            return CborErrorIO;
+          }
+
 #ifndef CBOR_PARSER_NO_STRICT_CHECKS
-            if (unlikely(it->extra < 32)) {
-                it->type = CborInvalidType;
-                return CborErrorIllegalSimpleType;
-            }
+          if (unlikely(it->extra < 32)) {
+            it->type = CborInvalidType;
+            return CborErrorIllegalSimpleType;
+          }
 #endif
-            break;
+          it->extra = v;
+        }
+        break;
 
         case 28:
         case 29:
@@ -246,10 +259,18 @@ static CborError preparse_value(CborValue *it)
     if (descriptor < Value8Bit)
         return CborNoError;
 
-    if (descriptor == Value8Bit)
-        it->extra = parser->d->get8(parser->d, it->offset + 1);
-    else if (descriptor == Value16Bit)
-        it->extra = parser->d->get16(parser->d, it->offset + 1);
+    if (descriptor == Value8Bit) {
+      uint8_t extra;
+      if (parser->d->get8(parser->d, it->offset + 1, &extra) != 1) {
+        return CborErrorIO;
+      }
+      it->extra = extra;
+    }
+    else if (descriptor == Value16Bit) {
+      if (parser->d->get16(parser->d, it->offset + 1, &it->extra)) {
+        return CborErrorIO;
+      }
+    }
     else
         it->flags |= CborIteratorFlag_IntegerValueTooLarge;     /* Value32Bit or Value64Bit */
     return CborNoError;
@@ -263,13 +284,20 @@ static CborError preparse_next_value(CborValue *it)
             it->type = CborInvalidType;
             return CborNoError;
         }
-    } else if (it->remaining == UINT32_MAX && it->offset != it->parser->end &&
-        it->parser->d->get8(it->parser->d, it->offset) == (uint8_t)BreakByte) {
-        /* end of map or array */
-        ++it->offset;
-        it->type = CborInvalidType;
-        it->remaining = 0;
-        return CborNoError;
+    } else {
+      if(!it->parser->end || it->offset != it->parser->end) {
+        uint8_t ch;
+        if(it->parser->d->get8(it->parser->d, it->offset, &ch) != 1) {
+          return CborErrorIO;
+        }
+        if(ch == (uint8_t)BreakByte) {
+          /* end of map or array */
+          ++it->offset;
+          it->type = CborInvalidType;
+          it->remaining = 0;
+          return CborNoError;
+        }
+      }
     }
 
     return preparse_value(it);
@@ -302,9 +330,12 @@ static CborError advance_internal(CborValue *it)
  * point values (SinglePrecisionFloat == Value32Bit and DoublePrecisionFloat ==
  * Value64Bit).
  */
-uint64_t _cbor_value_decode_int64_internal(const CborValue *value)
+CborError _cbor_value_decode_int64_internal(const CborValue *value, uint64_t *v)
 {
-    uint8_t val = value->parser->d->get8(value->parser->d, value->offset);
+    uint8_t val;
+    if(value->parser->d->get8(value->parser->d, value->offset, &val) != 1) {
+      return CborErrorIO;
+    }
 
     assert(value->flags & CborIteratorFlag_IntegerValueTooLarge ||
            value->type == CborFloatType || value->type == CborDoubleType);
@@ -312,11 +343,19 @@ uint64_t _cbor_value_decode_int64_internal(const CborValue *value)
     /* since the additional information can only be Value32Bit or Value64Bit,
      * we just need to test for the one bit those two options differ */
     assert((val & SmallValueMask) == Value32Bit || (val & SmallValueMask) == Value64Bit);
-    if ((val & 1) == (Value32Bit & 1))
-        return value->parser->d->get32(value->parser->d, value->offset + 1);
-
+    if ((val & 1) == (Value32Bit & 1)) {
+      uint32_t sv;
+      if(value->parser->d->get32(value->parser->d, value->offset + 1, &sv) != 4) {
+        return CborErrorIO;
+      }
+      *v = sv;
+      return CborNoError;
+    }
     assert((val & SmallValueMask) == Value64Bit);
-        return value->parser->d->get64(value->parser->d, value->offset + 1);
+    if(value->parser->d->get64(value->parser->d, value->offset + 1, v) != 8) {
+      return CborErrorIO;
+    }
+    return CborNoError;
 }
 
 /**
@@ -753,7 +792,12 @@ CborError cbor_value_leave_container(CborValue *it, const CborValue *recursed)
 CborError cbor_value_get_int64_checked(const CborValue *value, int64_t *result)
 {
     assert(cbor_value_is_integer(value));
-    uint64_t v = _cbor_value_extract_int64_helper(value);
+    uint64_t v;
+    CborError ret = _cbor_value_extract_int64_helper(value, &v);
+
+    if(ret) {
+      return ret;
+    }
 
     /* Check before converting, as the standard says (C11 6.3.1.3 paragraph 3):
      * "[if] the new type is signed and the value cannot be represented in it; either the
@@ -792,7 +836,11 @@ CborError cbor_value_get_int64_checked(const CborValue *value, int64_t *result)
 CborError cbor_value_get_int_checked(const CborValue *value, int *result)
 {
     assert(cbor_value_is_integer(value));
-    uint64_t v = _cbor_value_extract_int64_helper(value);
+    uint64_t v;
+    CborError ret =_cbor_value_extract_int64_helper(value, &v);
+    if(ret) {
+      return ret;
+    }
 
     /* Check before converting, as the standard says (C11 6.3.1.3 paragraph 3):
      * "[if] the new type is signed and the value cannot be represented in it; either the
@@ -909,15 +957,16 @@ CborError cbor_value_calculate_string_length(const CborValue *value, size_t *len
  * function. The choice is to optimize for memcpy, which is used in the base
  * parser API (cbor_value_copy_string), while memcmp is used in convenience API
  * only. */
-typedef uintptr_t (*IterateFunction)(struct cbor_decoder_reader *d, char *dst, int src_offset, size_t len);
+typedef int (*IterateFunction)(struct cbor_decoder_reader *d, char *dst, int src_offset, size_t len, uintptr_t *v);
 
-static uintptr_t iterate_noop(struct cbor_decoder_reader *d, char *dst, int src_offset,  size_t len)
+static int iterate_noop(struct cbor_decoder_reader *d, char *dst, int src_offset, size_t len, uintptr_t *v)
 {
     (void)d;
     (void)dst;
     (void)src_offset;
     (void)len;
-    return true;
+    *v = true;
+    return len;
 }
 
 static CborError iterate_string_chunks(const CborValue *value, char *buffer, size_t *buflen,
@@ -933,10 +982,16 @@ static CborError iterate_string_chunks(const CborValue *value, char *buffer, siz
         err = extract_length(value->parser, &offset, &total);
         if (err)
             return err;
-        if (total > (size_t)(value->parser->end - offset))
+        if (value->parser->end && total > (size_t)(value->parser->end - offset))
             return CborErrorUnexpectedEOF;
-        if (total <= *buflen)
-            *result = !!func(value->parser->d, buffer, offset, total);
+        if (total <= *buflen) {
+          uintptr_t v;
+          if((err = func(value->parser->d, buffer, offset, total, &v)) != total) {
+            errno = err;
+            return CborErrorIO;
+          }
+          *result = v;
+        }
         else
             *result = false;
         offset += total;
@@ -950,10 +1005,12 @@ static CborError iterate_string_chunks(const CborValue *value, char *buffer, siz
             size_t chunkLen;
             size_t newTotal;
 
-            if (offset == value->parser->end)
+            if (value->parser->end && offset == value->parser->end)
                 return CborErrorUnexpectedEOF;
 
-            val = value->parser->d->get8(value->parser->d, offset);
+            if(value->parser->d->get8(value->parser->d, offset, &val) != 1) {
+              return CborErrorIO;
+            }
 
             if (val == (uint8_t)BreakByte) {
                 ++offset;
@@ -971,11 +1028,16 @@ static CborError iterate_string_chunks(const CborValue *value, char *buffer, siz
             if (unlikely(add_check_overflow(total, chunkLen, &newTotal)))
                 return CborErrorDataTooLarge;
 
-            if (chunkLen > (size_t)(value->parser->end - offset))
+            if (value->parser->end && chunkLen > (size_t)(value->parser->end - offset))
                 return CborErrorUnexpectedEOF;
 
-            if (*result && *buflen >= newTotal)
-                *result = !!func(value->parser->d, buffer + total, offset, chunkLen);
+            if (*result && *buflen >= newTotal) {
+              uintptr_t v;
+              if(func(value->parser->d, buffer + total, offset, chunkLen, &v) != chunkLen) {
+                return CborErrorIO;
+              }
+              *result = v;
+            }
             else
                 *result = false;
 
@@ -1301,7 +1363,10 @@ CborError cbor_value_get_half_float(const CborValue *value, void *result)
     assert(cbor_value_is_half_float(value));
 
     /* size has been computed already */
-    uint16_t v = value->parser->d->get16(value->parser->d, value->offset + 1);
+    uint16_t v;
+    if(value->parser->d->get16(value->parser->d, value->offset + 1, &v) != 2){
+      return CborErrorIO;
+    }
     memcpy(result, &v, sizeof(v));
     return CborNoError;
 }
